@@ -1,0 +1,63 @@
+package com.logistica.alg;
+
+import com.logistica.Model.Edge;
+import com.logistica.Model.Graph;
+
+import java.util.*;
+
+/**
+ * Implementação do algoritmo de Prim para gerar a Árvore Geradora Mínima (MST).
+ * Utiliza como peso o tempo da aresta (getTime()).
+ * Observação:
+ * - Funciona corretamente em grafos NÃO direcionados.
+ * - Se o grafo não for conexo, gera a MST apenas do componente do nó inicial.
+ */
+public class PrimMST {
+    public static class Result {
+        public final List<Edge> mstEdges;
+        public final double totalWeight;
+
+        public Result(List<Edge> mstEdges, double totalWeight) {
+            this.mstEdges = mstEdges;
+            this.totalWeight = totalWeight;
+        }
+    }
+
+  //Executa o algoritmo de Prim a partir de um nó inicial.
+
+    public static Result run(Graph g, int startId) {
+        List<Edge> mst = new ArrayList<>();
+        double total = 0.0;
+
+        if (g == null || !g.getNodeIds().contains(startId)) {
+            return new Result(mst, total);
+        }
+
+        Set<Integer> visited = new HashSet<>();
+        PriorityQueue<Edge> pq = new PriorityQueue<>(
+                Comparator.comparingDouble(Edge::getTime)
+        );
+
+        // Começa pelo nó inicial
+        visited.add(startId);
+        for (Edge e : g.getAdj(startId)) {
+            pq.add(e);
+        }
+        while (!pq.isEmpty()) {
+            Edge e = pq.poll();
+            int u = e.getFrom();
+            int v = e.getTo();
+            if (visited.contains(v)) continue;
+
+            // Seleciona a aresta
+            visited.add(v);
+            mst.add(e);
+            total += e.getTime();
+
+            // Adiciona novas arestas a partir do novo nó
+            for (Edge next : g.getAdj(v)) {
+                if (!visited.contains(next.getTo())) {
+                    pq.add(next);
+                }}}
+
+        return new Result(mst, total);}}
