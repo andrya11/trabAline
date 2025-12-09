@@ -1,0 +1,161 @@
+package com.logistica.alg;
+
+import com.logistica.Model.Edge;
+import com.logistica.Model.Graph;
+
+import java.util.*;
+
+/**
+ * Implementação do algoritmo de Dijkstra com peso composto:
+ *   weight = alpha * time + beta * effectiveKm
+ *
+ * Nota sobre effectiveKm:
+ * - Se Edge.distanceKm está presente (não-NaN), usa-se essa distância multiplicada por ROAD_FACTOR.
+ * - Se Edge.distanceKm é NaN, tenta-se inferir distância a partir de edge.getCostReais() / graph.getCostPerKm().
+ */
+public class Dijkstra {
+    public static class Result {
+        public final Map<Integer, Double> dist;
+        public final Map<Integer, Integer> prev;
+        public Result(Map<Integer, Double> dist, Map<Integer, Integer> prev) {
+            this.dist = dist;
+            this.prev = prev;
+        }
+    }
+
+    private static final double ROAD_FACTOR = 1.6;
+
+    public static Result run(Graph g, int source, double alpha, double beta) {
+        Map<Integer, Double> dist = new HashMap<>();
+        Map<Integer, Integer> prev = new HashMap<>();
+
+        for (int id : g.getNodeIds()) {
+            dist.put(id, Double.POSITIVE_INFINITY);
+            prev.put(id, -1);
+        }
+        if (!g.getNodeIds().contains(source)) return new Result(dist, prev);
+
+        dist.put(source, 0.0);
+
+        PriorityQueue<NodeDist> heap = new PriorityQueue<>(Comparator.comparingDouble(nd -> nd.dist));
+        heap.add(new NodeDist(source, 0.0));
+
+        while (!heap.isEmpty()) {
+            NodeDist cur = heap.poll();
+            int u = cur.node;
+            double du = cur.dist;
+            if (du > dist.get(u)) continue;
+
+            for (Edge e : g.getAdj(u)) {
+                int v = e.getTo();
+                double edgeTime = e.getTime(); // minutos
+
+                // Determine effective km for this edge:
+                double effectiveKm;
+                if (!Double.isNaN(e.getDistanceKm())) {
+                    effectiveKm = e.getDistanceKm() * ROAD_FACTOR;
+                } else {
+                    // fallback: infer distance from monetary cost if possible
+                    double costPerKm = g.getCostPerKm() == 0 ? 1.0 : g.getCostPerKm();
+                    effectiveKm = (e.getCostReais() / costPerKm) * ROAD_FACTOR;
+                }
+
+                double w = alpha * edgeTime + beta * effectiveKm;
+                double alt = du + w;
+                if (alt < dist.get(v)) {
+                    dist.put(v, alt);
+                    prev.put(v, u);
+                    heap.add(new NodeDist(v, alt));
+                }
+            }
+        }
+
+        return new Result(dist, prev);
+    }
+
+    /**
+     * Reconstrói o caminho a partir do mapa prev retornado por run().
+     * Retorna lista de ids do caminho na ordem da origem ao destino.
+     * Se target não for alcançável (prev == -1 e target != source) retorna lista vazia.
+     */
+    public static List<Integer> reconstruct(Map<Integer, Integer> prev, int source, int target) {
+        LinkedList<Integer> path = new LinkedList<>();
+        Integer at = target;
+        while (at != null && at != -1) {
+            path.addFirst(at);
+            if (at.equals(source)) break;
+            at = prev.get(at);
+        }
+        if (path.isEmpty() || !path.get(0).equals(source)) return Collections.emptyList();
+        return path;
+    }
+
+    /**
+     * Calcula métricas reais do caminho (somando aresta-a-aresta):
+     * - totalTimeMin (minutos)
+     * - totalDistanceKm (km) (tentativa de inferir se necessário)
+     * - totalCostReais (R$)
+     * - totalWeightedCost (alpha/beta + roadFactor) — igual à função objetivo usada pelo Dijkstra
+     */
+    public static class PathMetrics {
+        public final double totalTimeMin;
+        public final double totalDistanceKm; // km (may be NaN if no distance info anywhere)
+        public final double totalCostReais;
+        public final double totalWeighted;
+
+        public PathMetrics(double totalTimeMin, double totalDistanceKm, double totalCostReais, double totalWeighted) {
+            this.totalTimeMin = totalTimeMin;
+            this.totalDistanceKm = totalDistanceKm;
+            this.totalCostReais = totalCostReais;
+            this.totalWeighted = totalWeighted;
+        }
+    }
+
+    public static PathMetrics computePathMetrics(Graph g, List<Integer> path, double alpha, double beta) {
+        if (path == null || path.size() < 1) return new PathMetrics(0, Double.NaN, 0, 0);
+        double totalTime = 0.0;
+        double totalKm = 0.0;
+        double totalCostReais = 0.0;
+        double totalWeighted = 0.0;
+
+        for (int i = 0; i + 1 < path.size(); i++) {
+            int u = path.get(i);
+            int v = path.get(i+1);
+            // procurar aresta u->v
+            Edge chosen = null;
+            for (Edge e : g.getAdj(u)) {
+                if (e.getTo() == v) { chosen = e; break; }
+            }
+            if (chosen == null) {
+                // aresta não encontrada: fallback (continue com 0)
+                continue;
+            }
+            double time = chosen.getTime();
+            double distanceKm = chosen.getDistanceKm();
+            double costReais = chosen.getCostReais();
+
+            // Se não houver distance disponível, tentar inferir via costPerKm
+            if (Double.isNaN(distanceKm)) {
+                double costPerKm = g.getCostPerKm() == 0 ? 1.0 : g.getCostPerKm();
+                if (costPerKm > 0) distanceKm = costReais / costPerKm;
+            }
+
+            double effectiveKm = Double.isNaN(distanceKm) ? 0.0 : (distanceKm * ROAD_FACTOR);
+            double weighted = alpha * time + beta * effectiveKm;
+
+            totalTime += time;
+            if (!Double.isNaN(distanceKm)) totalKm += distanceKm;
+            totalCostReais += costReais;
+            totalWeighted += weighted;
+        }
+
+        double totalDistanceKm = Double.isNaN(totalKm) ? Double.NaN : totalKm;
+        return new PathMetrics(totalTime, totalDistanceKm, totalCostReais, totalWeighted);
+    }
+
+    private static class NodeDist {
+        int node;
+        double dist;
+        NodeDist(int node, double dist) { this.node = node; this.dist = dist; }
+    }
+}
