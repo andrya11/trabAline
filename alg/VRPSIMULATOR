@@ -1,0 +1,208 @@
+package com.logistica.alg;
+
+import com.logistica.Model.Edge;
+import com.logistica.Model.Graph;
+
+import java.util.*;
+
+/**
+ * VRPSimulator:
+ * - Estrutura simples para simular o roteamento de múltiplos veículos (heurística).
+ * - Calcula também distância total (km) e custo monetário estimado por rota.
+ * Cost model (fixed):
+ *   R$ 1.20 por km
+ *   R$ 0.40 por minuto
+ * Aplica ROAD_FACTOR para ajustar distância do grafo para distância real aproximada.
+ */
+public class VRPSimulator {
+    public static class Route {
+        public final List<Integer> stops = new ArrayList<>();
+        public double totalTime = 0.0;   // minutos
+        public double totalCost = 0.0;   // km raw (soma das distancesKm das arestas, inferred se necessário)
+        public double totalKm = 0.0;     // alias para totalCost
+        public double adjustedKm = 0.0;  // km após aplicar ROAD_FACTOR
+        public double totalMoney = 0.0;  // R$
+        @Override
+        public String toString() {
+            return "Route{" +
+                    "stops=" + stops +
+                    ", totalTime=" + totalTime +
+                    ", totalKm=" + totalKm +
+                    ", adjustedKm=" + adjustedKm +
+                    ", totalMoney=" + totalMoney +
+                    '}';
+        }
+    }
+
+    public static class Result {
+        public final List<Route> routes;
+        public Result(List<Route> routes) { this.routes = routes; }
+
+        public double sumTime() { return routes.stream().mapToDouble(r -> r.totalTime).sum(); }
+        public double sumCost() { return routes.stream().mapToDouble(r -> r.totalCost).sum(); } // km raw
+        public double sumAdjustedKm() { return routes.stream().mapToDouble(r -> r.adjustedKm).sum(); }
+        public double sumMoney() { return routes.stream().mapToDouble(r -> r.totalMoney).sum(); }
+    }
+
+    // Cost parameters (can be tuned)
+    private static final double R_PER_KM = 1.20;   // R$ por km
+    private static final double R_PER_MIN = 0.40;  // R$ por minuto
+
+    // Road factor (same idea used in Dijkstra)
+    private static final double ROAD_FACTOR = 1.6;
+
+    // Executa a simulação do VRP.
+    public static Result run(Graph g, int depot, List<Integer> customers,
+                             int vehicles, double alpha, double beta) {
+
+        if (g == null) throw new IllegalArgumentException("Graph is null");
+        if (customers == null) customers = Collections.emptyList();
+        if (vehicles <= 0) vehicles = 1;
+        if (customers.isEmpty()) return new Result(Collections.emptyList());
+
+        int k = Math.min(vehicles, Math.max(1, customers.size()));
+
+        // 1) Dijkstra a partir do depósito (para ordenar/seed selection)
+        Dijkstra.Result fromDepot = Dijkstra.run(g, depot, alpha, beta);
+
+        // 2) Seleciona seeds (k clientes mais distantes do depósito) - farthest-first
+        List<Integer> sortedByDepotDist = new ArrayList<>(customers);
+        sortedByDepotDist.sort(Comparator.comparingDouble(c -> {
+            Double d = fromDepot.dist.get(c);
+            return d == null ? Double.POSITIVE_INFINITY : d;
+        }));
+        Collections.reverse(sortedByDepotDist);
+
+        List<Integer> seeds = new ArrayList<>();
+        for (int i = 0; i < k && i < sortedByDepotDist.size(); i++) seeds.add(sortedByDepotDist.get(i));
+
+        // 3) Rodar Dijkstra a partir de cada seed (para atribuições)
+        Map<Integer, Dijkstra.Result> seedResults = new HashMap<>();
+        for (int seed : seeds) {
+            seedResults.put(seed, Dijkstra.run(g, seed, alpha, beta));
+        }
+
+        // 4) Atribuir cada cliente ao seed mais próximo
+        Map<Integer, List<Integer>> clusterOfSeed = new LinkedHashMap<>();
+        for (int seed : seeds) clusterOfSeed.put(seed, new ArrayList<>());
+
+        for (int c : customers) {
+            int bestSeed = seeds.get(0);
+            double bestDist = Double.POSITIVE_INFINITY;
+            for (int seed : seeds) {
+                Dijkstra.Result sr = seedResults.get(seed);
+                Double d = (sr == null) ? null : sr.dist.get(c);
+                if (d != null && d < bestDist) {
+                    bestDist = d;
+                    bestSeed = seed;
+                }
+            }
+            clusterOfSeed.get(bestSeed).add(c);
+        }
+
+        // 5) Construir rotas por cluster (Nearest-Neighbor interno com Dijkstra)
+        List<Route> routes = new ArrayList<>();
+        int vehicleIndex = 0;
+
+        for (Map.Entry<Integer, List<Integer>> entry : clusterOfSeed.entrySet()) {
+            if (vehicleIndex >= vehicles) break;
+
+            List<Integer> vehicleCustomers = entry.getValue();
+            vehicleCustomers.sort(Comparator.comparingDouble(c -> {
+                Double d = fromDepot.dist.get(c);
+                return d == null ? Double.POSITIVE_INFINITY : d;
+            }));
+
+            Route route = new Route();
+            route.stops.add(depot);
+            Set<Integer> remaining = new LinkedHashSet<>(vehicleCustomers);
+            int cur = depot;
+            while (!remaining.isEmpty()) {
+                Dijkstra.Result dres = Dijkstra.run(g, cur, alpha, beta);
+                double bestDistToCust = Double.POSITIVE_INFINITY;
+                int bestCust = -1;
+                for (int c : remaining) {
+                    Double d = dres.dist.get(c);
+                    if (d != null && d < bestDistToCust) {
+                        bestDistToCust = d;
+                        bestCust = c;
+                    }
+                }
+
+                if (bestCust == -1) break;
+                // reconstruct requires (prev, source, target)
+                List<Integer> path = Dijkstra.reconstruct(dres.prev, cur, bestCust);
+                if (path == null || path.size() < 2) break;
+
+                // remove the first node if it's the current node (we already have it in route.stops)
+                if (!path.isEmpty() && path.get(0) == cur) path.remove(0);
+
+                for (int i = 0; i < path.size(); i++) {
+                    int a = (i == 0) ? cur : path.get(i - 1);
+                    int b = path.get(i);
+                    Edge e = findEdge(g, a, b);
+                    if (e != null) {
+                        route.totalTime += e.getTime();      // minutos
+
+                        // prefer distanceKm if available; caso contrário, inferir via costReais / graph.getCostPerKm()
+                        double edgeKm = e.getDistanceKm();
+                        if (Double.isNaN(edgeKm)) {
+                            double costPerKm = g.getCostPerKm() == 0 ? 1.0 : g.getCostPerKm();
+                            if (costPerKm != 0) edgeKm = e.getCostReais() / costPerKm;
+                        }
+                        // se ainda NaN, considera 0
+                        if (Double.isNaN(edgeKm)) edgeKm = 0.0;
+
+                        route.totalCost += edgeKm;      // km raw
+                        route.totalKm += edgeKm;
+                    }
+                    route.stops.add(b);
+                }
+                remaining.remove(bestCust);
+                cur = bestCust;
+            }
+            // volta ao depósito (se possível)
+            if (cur != depot) {
+                Dijkstra.Result back = Dijkstra.run(g, cur, alpha, beta);
+                List<Integer> pathBack = Dijkstra.reconstruct(back.prev, cur, depot);
+                if (pathBack != null && pathBack.size() >= 2) {
+                    if (!pathBack.isEmpty() && pathBack.get(0) == cur) pathBack.remove(0);
+                    for (int i = 0; i < pathBack.size(); i++) {
+                        int a = (i == 0) ? cur : pathBack.get(i - 1);
+                        int b = pathBack.get(i);
+                        Edge e = findEdge(g, a, b);
+                        if (e != null) {
+                            route.totalTime += e.getTime();
+
+                            double edgeKm = e.getDistanceKm();
+                            if (Double.isNaN(edgeKm)) {
+                                double costPerKm = g.getCostPerKm() == 0 ? 1.0 : g.getCostPerKm();
+                                if (costPerKm != 0) edgeKm = e.getCostReais() / costPerKm;
+                            }
+                            if (Double.isNaN(edgeKm)) edgeKm = 0.0;
+
+                            route.totalCost += edgeKm;
+                            route.totalKm += edgeKm;
+                        }
+                        route.stops.add(b);
+                    }
+                }
+            }
+
+            // aplicar road factor para estimativa realista e calcular custo monetário
+            route.adjustedKm = route.totalKm * ROAD_FACTOR;
+            route.totalMoney = route.adjustedKm * R_PER_KM + route.totalTime * R_PER_MIN;
+            routes.add(route);
+            vehicleIndex++;
+        }
+        return new Result(routes);
+    }
+
+    // Busca a aresta real a->b no grafo
+    private static Edge findEdge(Graph g, int a, int b) {
+        for (Edge e : g.getAdj(a)) {
+            if (e.getTo() == b) return e;
+        }
+        return null;
+    }
+}
