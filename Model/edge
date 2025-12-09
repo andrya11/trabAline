@@ -1,0 +1,55 @@
+package com.logistica.Model;
+
+/**
+ * Representa uma aresta.
+ *
+ * - time: tempo em minutos
+ * - distanceKm: distância em km (pode ser NaN se não conhecida)
+ * - costReais: custo monetário em R$ associado à aresta
+ *
+ * Observação: preferimos ter distanceKm separado de costReais (evita ambiguidade).
+ */
+public class Edge {
+    private final int from;
+    private final int to;
+    private final double time; // minutos
+    private final double distanceKm; // km (pode ser NaN)
+    private final double costReais;   // R$
+
+    public Edge(int from, int to, double time, double distanceKm, double costReais) {
+        this.from = from;
+        this.to = to;
+        this.time = time;
+        this.distanceKm = distanceKm;
+        this.costReais = costReais;
+    }
+
+    // Conveniência: construtor quando só há custo monetário (distance unknown)
+    public Edge(int from, int to, double time, double costReais) {
+        this(from, to, time, Double.NaN, costReais);
+    }
+
+    public int getFrom() { return from; }
+    public int getTo() { return to; }
+    public double getTime() { return time; }
+    public double getDistanceKm() { return distanceKm; }
+    public double getCostReais() { return costReais; }
+
+    /**
+     * Peso composto para algoritmos (com opção de roadFactor aplicado à distância).
+     * If distanceKm is NaN, caller must provide an alternative reasoning (e.g., infer from costPerKm).
+     */
+    public double weight(double alpha, double beta, double roadFactor) {
+        double effectiveKm = Double.isNaN(distanceKm) ? Double.NaN : (distanceKm * roadFactor);
+        // caller should handle NaN effectiveKm; this method returns NaN if distance unknown
+        return alpha * time + beta * effectiveKm;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("%d -> %d (time=%.2f min, dist=%.3f km, cost=%.2f R$)",
+                from, to, time,
+                Double.isNaN(distanceKm) ? -1.0 : distanceKm,
+                costReais);
+    }
+}
