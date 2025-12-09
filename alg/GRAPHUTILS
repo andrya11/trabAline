@@ -1,0 +1,147 @@
+package com.logistica.alg; // ou com.logistica.util
+
+import com.logistica.Model.Edge;
+import com.logistica.Model.Graph;
+
+import java.util.*;
+
+/**
+ * GraphUtils - utilitários não-invasivos para:
+ *  - connectedComponents
+ *  - componentOfNode
+ *  - isolatedNodes
+ *  - hasCycleDirected / hasCycleUndirected
+ *
+ * Usa apenas a API pública do Graph (getNodeIds, getAdj).
+ */
+public final class GraphUtils {
+
+    private GraphUtils() {}
+
+    /** Retorna lista de componentes; cada componente é lista de node ids. */
+    public static List<List<Integer>> connectedComponents(Graph g) {
+        List<List<Integer>> comps = new ArrayList<>();
+        if (g == null) return comps;
+        Set<Integer> seen = new HashSet<>();
+        for (int node : g.getNodeIds()) {
+            if (seen.contains(node)) continue;
+            List<Integer> comp = new ArrayList<>();
+            // DFS stack
+            Deque<Integer> stack = new ArrayDeque<>();
+            stack.push(node);
+            seen.add(node);
+            while (!stack.isEmpty()) {
+                int u = stack.pop();
+                comp.add(u);
+                for (Edge e : g.getAdj(u)) {
+                    int v = e.getTo();
+                    if (!seen.contains(v)) {
+                        seen.add(v);
+                        stack.push(v);
+                    }
+                }
+                // em grafos não direcionados, também é suficiente iterar adj tal qual (Graph já criou ambas direções ao addEdge)
+            }
+            comps.add(comp);
+        }
+        return comps;
+    }
+
+    /** Retorna o índice do componente onde 'node' pertence na lista retornada por connectedComponents,
+     *  ou -1 se não encontrado. */
+    public static int componentIndexOfNode(Graph g, int node) {
+        List<List<Integer>> comps = connectedComponents(g);
+        for (int i = 0; i < comps.size(); i++) {
+            if (comps.get(i).contains(node)) return i;
+        }
+        return -1;
+    }
+
+    /** Lista de nós sem arestas de saída (vértices isolados) — útil para validar dados. */
+    public static List<Integer> isolatedNodes(Graph g) {
+        List<Integer> isolated = new ArrayList<>();
+        if (g == null) return isolated;
+        for (int node : g.getNodeIds()) {
+            boolean hasOut = !g.getAdj(node).isEmpty();
+            boolean hasIn = false;
+            // verifica in-edges (somente se grafo não direcionado isso já estaria em adj; para directed, checar in)
+            if (g.isDirected()) {
+                for (int u : g.getNodeIds()) {
+                    for (Edge e : g.getAdj(u)) {
+                        if (e.getTo() == node) { hasIn = true; break; }
+                    }
+                    if (hasIn) break;
+                }
+            } else {
+                // em não direcionado, out==in, então checar out é suficiente
+                hasIn = hasOut;
+            }
+            if (!hasOut && !hasIn) isolated.add(node);
+        }
+        return isolated;
+    }
+
+    // ------------------ Ciclos ------------------
+
+    /** Detecta ciclo em grafo direcionado usando DFS com estados (0,1,2). */
+    public static boolean hasCycleDirected(Graph g) {
+        if (g == null) return false;
+        Map<Integer, Integer> state = new HashMap<>(); // 0=unseen,1=visiting,2=done
+        for (int node : g.getNodeIds()) state.put(node, 0);
+        for (int node : g.getNodeIds()) {
+            if (state.get(node) == 0) {
+                if (dfsCycleDirected(node, state, g)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean dfsCycleDirected(int u, Map<Integer,Integer> state, Graph g) {
+        state.put(u, 1);
+        for (Edge e : g.getAdj(u)) {
+            int v = e.getTo();
+            int st = state.getOrDefault(v, 0);
+            if (st == 1) return true; // back edge
+            if (st == 0 && dfsCycleDirected(v, state, g)) return true;
+        }
+        state.put(u, 2);
+        return false;
+    }
+
+    /** Detecta ciclo em grafo não-direcionado. */
+    public static boolean hasCycleUndirected(Graph g) {
+        if (g == null) return false;
+        Set<Integer> visited = new HashSet<>();
+        for (int node : g.getNodeIds()) {
+            if (!visited.contains(node)) {
+                if (dfsCycleUndir(node, -1, visited, g)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean dfsCycleUndir(int u, int parent, Set<Integer> visited, Graph g) {
+        visited.add(u);
+        for (Edge e : g.getAdj(u)) {
+            int v = e.getTo();
+            if (!visited.contains(v)) {
+                if (dfsCycleUndir(v, u, visited, g)) return true;
+            } else if (v != parent) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ------------------ Utilitários rápidos de debug ------------------
+
+    /** Exibe resumo simples no formato: nNodes, nEdges (counting directed adj entries), nComponents */
+    public static String summary(Graph g) {
+        if (g == null) return "null graph";
+        int nNodes = g.getNodeIds().size();
+        int nEdges = 0;
+        for (int u : g.getNodeIds()) nEdges += g.getAdj(u).size();
+        int comps = connectedComponents(g).size();
+        return String.format("Nodes=%d, AdjEntries=%d, Components=%d, Directed=%b", nNodes, nEdges, comps, g.isDirected());
+    }
+}
