@@ -1,0 +1,28 @@
+package com.logistica.alg;
+import com.logistica.Model.Graph;
+import java.util.*;
+/**
+ * BFS (Breadth-First Search) sobre o grafo.
+ * Retorna a ordem de visita dos nós a partir de um nó inicial.
+ * Observação:
+ * - BFS aqui explora arestas na ordem que aparecem na lista de adjacência.
+ * - Útil para verificar conectividade / componente a partir de um nó.
+ */
+public class BFS {
+    public static List<Integer> run(Graph g, int start) {
+        List<Integer> order = new ArrayList<>();
+        if (g == null || !g.getNodeIds().contains(start)) return order;
+        Queue<Integer> q = new ArrayDeque<>();
+        Set<Integer> seen = new HashSet<>();
+        q.add(start);
+        seen.add(start);
+        while (!q.isEmpty()) {
+            int u = q.poll();
+            order.add(u);
+
+            for (var e : g.getAdj(u)) {
+                int v = e.getTo();
+                if (!seen.contains(v)) {
+                    seen.add(v);
+                    q.add(v);
+                }}}  return order; }}
