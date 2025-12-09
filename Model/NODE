@@ -1,0 +1,39 @@
+package com.logistica.Model;
+
+
+ // Representa um nó (vértice) do grafo. Agora baseado em coordenadas reais da cidade (longitude e latitude).
+
+public class Node {
+    // Identificador único do nó
+    private final int id;
+    // Nome do ponto real (Casa, Universidade, Shopping, etc.)
+    private final String label;
+    // Longitude (ex: -49.07)
+    private final double x;
+    // Latitude (ex: -5.35)
+    private final double y;
+
+    //Construtor do nó.
+    public Node(int id, String label, double x, double y) {
+        this.id = id;
+        this.label = label;
+        this.x = x;
+        this.y = y;}
+
+    public int getId() {
+        return id;}
+
+    public String getLabel() {
+        return label;}
+
+    // Retorna a longitude
+    public double getX() {
+        return x;}
+
+    // Retorna a latitude
+    public double getY() {
+        return y;}
+
+    @Override
+    public String toString() {
+        return id + " - " + label;}}
