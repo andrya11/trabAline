@@ -1,0 +1,320 @@
+package com.logistica.Model;
+import java.nio.file.*;
+import java.util.*;
+
+/**
+ * Representa o grafo do sistema (lista de adjacência).
+ *
+ * Observações importantes após alterações:
+ * - A semântica de "cost" em Edge é agora **monetária (R$)**.
+ * - Para casos em que o CSV fornece comprimento em metros (length_m),
+ *   o loader converte para km e multiplica por costPerKm para obter R$.
+ * - autoGenerateEdgesFromCoordinates calcula distanceKm (por haversine)
+ *   e cria arestas com custo monetário = distanceKm * costPerKm.
+ *
+ * Você pode configurar costPerKm via setCostPerKm(...)
+ */
+public class Graph {
+    private final boolean directed;
+    private final Map<Integer, Node> nodes = new HashMap<>();
+    private final Map<Integer, List<Edge>> adj = new HashMap<>();
+
+    /** Custo padrão por km (em R$). Usado quando only distance is available. */
+    private double costPerKm = 1.0;
+
+    public Graph(boolean directed) {
+        this.directed = directed;
+    }
+
+    public double getCostPerKm() { return costPerKm; }
+    public void setCostPerKm(double costPerKm) { this.costPerKm = costPerKm; }
+
+    public void addNode(Node node) {
+        nodes.put(node.getId(), node);
+        adj.putIfAbsent(node.getId(), new ArrayList<>());
+    }
+
+    /**
+     * Adiciona aresta. Aqui 'cost' é interpretado como custo monetário em R$.
+     * Se você tiver distância em km, use addEdge(from,to,time, distanceKm, costReais).
+     */
+    public void addEdge(int from, int to, double time, double cost) {
+        if (!nodes.containsKey(from) || !nodes.containsKey(to)) {
+            throw new IllegalArgumentException("Os nós devem existir antes de criar arestas");
+        }
+        boolean exists = false;
+        for (Edge e : adj.getOrDefault(from, Collections.emptyList())) {
+            if (e.getTo() == to) { exists = true; break; }
+        }
+        if (!exists) {
+            // cria Edge sem distance (distance = NaN) e cost em R$
+            adj.get(from).add(new Edge(from, to, time, Double.NaN, cost));
+            if (!directed) {
+                adj.get(to).add(new Edge(to, from, time, Double.NaN, cost));
+            }
+        }
+    }
+
+    /**
+     * Versão que inclui explicitamente distanceKm e costReais.
+     */
+    public void addEdge(int from, int to, double time, double distanceKm, double costReais) {
+        if (!nodes.containsKey(from) || !nodes.containsKey(to)) {
+            throw new IllegalArgumentException("Os nós devem existir antes de criar arestas");
+        }
+        boolean exists = false;
+        for (Edge e : adj.getOrDefault(from, Collections.emptyList())) {
+            if (e.getTo() == to) { exists = true; break; }
+        }
+        if (!exists) {
+            adj.get(from).add(new Edge(from, to, time, distanceKm, costReais));
+            if (!directed) {
+                adj.get(to).add(new Edge(to, from, time, distanceKm, costReais));
+            }
+        }
+    }
+
+    public Collection<Node> getNodes() { return nodes.values(); }
+    public Node getNode(int id) { return nodes.get(id); }
+    public List<Edge> getAdj(int id) { return adj.getOrDefault(id, Collections.emptyList()); }
+    public Set<Integer> getNodeIds() { return nodes.keySet(); }
+    public boolean isDirected() { return directed; }
+
+    public void removeEdge(int from, int to) {
+        adj.getOrDefault(from, new ArrayList<>()).removeIf(e -> e.getTo() == to);
+        if (!directed) {
+            adj.getOrDefault(to, new ArrayList<>()).removeIf(e -> e.getTo() == from);
+        }
+    }
+
+    public Graph copy() {
+        Graph g = new Graph(directed);
+        g.setCostPerKm(costPerKm);
+        for (Node n : nodes.values()) g.addNode(new Node(n.getId(), n.getLabel(), n.getX(), n.getY()));
+        for (int u : adj.keySet()) {
+            for (Edge e : adj.get(u)) {
+                // preserva distance if present
+                if (!Double.isNaN(e.getDistanceKm())) {
+                    g.addEdge(e.getFrom(), e.getTo(), e.getTime(), e.getDistanceKm(), e.getCostReais());
+                } else {
+                    g.addEdge(e.getFrom(), e.getTo(), e.getTime(), e.getCostReais());
+                }
+            }
+        }
+        return g;
+    }
+
+    // ------------------- I/O CSV com suporte ao formato original -------------------
+
+    /**
+     * Carrega grafo a partir da pasta 'dir' que deve conter nodes.csv e edges.csv.
+     *
+     * Suporta:
+     *  - nodes.csv: id,label,lon,lat  (ou lat,lon - detectado automaticamente)
+     *  - edges.csv (um dos formatos):
+     *      a) from,to,time_minutes,cost  (onde cost pode ser R$ ou metros/km dependendo do CSV)
+     *      b) source,target,length_m,travel_time_s,directed,road_type
+     *
+     * No caso (b):
+     *  - time = travel_time_s / 60.0 (minutos)
+     *  - distanceKm = length_m / 1000.0
+     *  - costReais = distanceKm * costPerKm
+     *
+     * No caso (a):
+     *  - se o campo 'cost' for claramente grande (>1000), assume metros e converte para km e depois para R$.
+     *  - senão assume-se que é valor monetário já em R$.
+     */
+    public static Graph loadFromFolder(Path dir, boolean directed) throws Exception {
+        Path nodesFile = dir.resolve("nodes.csv");
+        Path edgesFile = dir.resolve("edges.csv");
+        if (!Files.exists(nodesFile)) throw new IllegalArgumentException("nodes.csv not found in " + dir);
+        if (!Files.exists(edgesFile)) throw new IllegalArgumentException("edges.csv not found in " + dir);
+
+        // ---------- NODES: leitura em modo robusto e detecção lon/lat ----------
+        List<String> nlines = Files.readAllLines(nodesFile);
+        class RawNode { int id; String label; String c2; String c3; }
+        List<RawNode> raw = new ArrayList<>();
+        for (String ln : nlines) {
+            ln = ln.trim();
+            if (ln.isEmpty() || ln.startsWith("#")) continue;
+            String[] p = ln.split(",", -1);
+            if (p.length == 0 || !p[0].trim().matches("\\d+")) continue;
+            RawNode r = new RawNode();
+            r.id = Integer.parseInt(p[0].trim());
+            r.label = (p.length>1) ? p[1].trim() : ("N"+r.id);
+            r.c2 = (p.length>2) ? p[2].trim() : "";
+            r.c3 = (p.length>3) ? p[3].trim() : "";
+            raw.add(r);
+        }
+
+        // Heurística: conta evidências de (lon,lat) vs (lat,lon)
+        int countLonLat = 0, countLatLon = 0;
+        for (RawNode r : raw) {
+            try {
+                double a = Double.parseDouble(r.c2);
+                double b = Double.parseDouble(r.c3);
+                boolean aLooksLon = Math.abs(a) <= 180 && Math.abs(a) >= 10;
+                boolean aLooksLat = Math.abs(a) <= 90 && Math.abs(a) < 10;
+                boolean bLooksLon = Math.abs(b) <= 180 && Math.abs(b) >= 10;
+                boolean bLooksLat = Math.abs(b) <= 90 && Math.abs(b) < 10;
+                if (aLooksLon && bLooksLat) countLonLat++;
+                if (aLooksLat && bLooksLon) countLatLon++;
+            } catch (Exception ex) { /* ignore parse errors */ }
+        }
+        boolean likelyLonLat = countLonLat >= countLatLon;
+
+        Graph g = new Graph(directed);
+        for (RawNode r : raw) {
+            double x = Double.NaN, y = Double.NaN;
+            if (!r.c2.isEmpty() && !r.c3.isEmpty()) {
+                try {
+                    double v2 = Double.parseDouble(r.c2);
+                    double v3 = Double.parseDouble(r.c3);
+                    if (likelyLonLat) { x = v2; y = v3; } else { x = v3; y = v2; } // ensure x=lon, y=lat
+                } catch (Exception ex) { x = Double.NaN; y = Double.NaN; }
+            }
+            g.addNode(new Node(r.id, r.label, x, y));
+        }
+
+        // ---------- EDGES: tenta detectar o formato e converter ----------
+        List<String> elines = Files.readAllLines(edgesFile);
+        String header = elines.isEmpty() ? "" : elines.get(0).toLowerCase();
+        boolean headerHasTravelTimeS = header.contains("travel_time_s");
+        boolean headerHasLengthM = header.contains("length_m");
+
+        for (String ln : elines) {
+            ln = ln.trim();
+            if (ln.isEmpty() || ln.startsWith("#")) continue;
+            String[] p = ln.split(",", -1);
+            if (p.length > 0 && !p[0].trim().matches("-?\\d+")) continue;
+
+            // Format B: source,target,length_m,travel_time_s,...
+            if (p.length >= 4 && (headerHasTravelTimeS || looksLikeFormatB(p))) {
+                try {
+                    int from = Integer.parseInt(p[0].trim());
+                    int to = Integer.parseInt(p[1].trim());
+                    double length_m = Double.parseDouble(p[2].trim());
+                    double travel_s = Double.parseDouble(p[3].trim());
+                    double timeMinutes = travel_s / 60.0;
+                    double distanceKm = length_m / 1000.0;
+                    double costReais = distanceKm * g.getCostPerKm();
+                    if (!g.nodes.containsKey(from) || !g.nodes.containsKey(to)) continue;
+                    g.addEdge(from, to, timeMinutes, distanceKm, costReais);
+                } catch (Exception ex) {
+                    // fallback later
+                }
+                continue;
+            }
+
+            // Generic parse: from,to,time,cost
+            if (p.length >= 3) {
+                try {
+                    int from = Integer.parseInt(p[0].trim());
+                    int to = Integer.parseInt(p[1].trim());
+                    double timeRaw = Double.parseDouble(p[2].trim());
+                    double timeMinutes = (Math.abs(timeRaw) > 1000) ? timeRaw / 60.0 : timeRaw;
+                    double costField = 0.0;
+                    double distanceKm = Double.NaN;
+                    if (p.length > 3 && !p[3].trim().isEmpty()) {
+                        double rawCost = Double.parseDouble(p[3].trim());
+                        // heuristic: if rawCost looks like meters (>1000), treat as meters
+                        if (Math.abs(rawCost) > 1000) {
+                            distanceKm = rawCost / 1000.0;
+                            costField = distanceKm * g.getCostPerKm();
+                        } else {
+                            // assume this is already monetary R$
+                            costField = rawCost;
+                        }
+                    } else {
+                        costField = 0.0;
+                    }
+                    if (!g.nodes.containsKey(from) || !g.nodes.containsKey(to)) continue;
+                    if (!Double.isNaN(distanceKm)) {
+                        g.addEdge(from, to, timeMinutes, distanceKm, costField);
+                    } else {
+                        g.addEdge(from, to, timeMinutes, costField);
+                    }
+                } catch (Exception ex) {
+                    // ignore malformed line
+                }
+            }
+        }
+
+        return g;
+    }
+
+    private static boolean looksLikeFormatB(String[] p) {
+        if (p.length < 4) return false;
+        try {
+            double v2 = Double.parseDouble(p[2].trim()); // length_m
+            double v3 = Double.parseDouble(p[3].trim()); // travel_time_s
+            if (v2 > 50 && v2 < 1e6 && v3 > 0 && v3 < 36000) return true;
+        } catch (Exception ex) { return false; }
+        return false;
+    }
+
+    public static Graph loadFromDefault(boolean directed) {
+        Path cwd = Paths.get(System.getProperty("user.dir"), "grafos");
+        Path home = Paths.get(System.getProperty("user.home"), "grafos");
+        try {
+            if (Files.exists(cwd) && Files.isDirectory(cwd)) return loadFromFolder(cwd, directed);
+            if (Files.exists(home) && Files.isDirectory(home)) return loadFromFolder(home, directed);
+        } catch (Exception ex) {
+            // ignore
+        }
+        return null;
+    }
+
+    // ------------------- Geometria / Geração de arestas -------------------
+
+    public static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+        final int R = 6371000;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat/2) * Math.sin(dLat/2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon/2) * Math.sin(dLon/2);
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+
+    /**
+     * Auto-generate edges connecting each node to its k nearest neighbors.
+     * Time is computed from distance and speedKmh (km/h) -> minutes.
+     * Adds arestas com distanceKm e custo monetário = distanceKm * costPerKm.
+     */
+    public void autoGenerateEdgesFromCoordinates(int k, double speedKmh) {
+        List<Node> nlist = new ArrayList<>();
+        for (Node n : nodes.values()) {
+            if (!Double.isNaN(n.getX()) && !Double.isNaN(n.getY())) nlist.add(n);
+        }
+        int n = nlist.size();
+        if (n == 0) return;
+
+        double speedMs = (speedKmh <= 0) ? (40.0 * 1000.0/3600.0) : (speedKmh * 1000.0 / 3600.0);
+
+        for (int i = 0; i < n; i++) {
+            Node ni = nlist.get(i);
+            List<double[]> neigh = new ArrayList<>();
+            for (int j = 0; j < n; j++) {
+                if (i == j) continue;
+                Node nj = nlist.get(j);
+                double dist = haversineMeters(ni.getY(), ni.getX(), nj.getY(), nj.getX());
+                neigh.add(new double[]{dist, nj.getId()});
+            }
+            neigh.sort(Comparator.comparingDouble(a -> a[0]));
+            int upto = Math.min(k, neigh.size());
+            for (int t = 0; t < upto; t++) {
+                double dist = neigh.get(t)[0]; // meters
+                int toId = (int) neigh.get(t)[1];
+                double timeSec = (speedMs > 0) ? (dist / speedMs) : (dist / (40.0 * 1000.0/3600.0));
+                double timeMin = timeSec / 60.0;
+                double distanceKm = dist / 1000.0;
+                double costReais = distanceKm * getCostPerKm();
+                boolean exists = false;
+                for (Edge e : getAdj(ni.getId())) if (e.getTo() == toId) { exists = true; break; }
+                if (!exists) addEdge(ni.getId(), toId, timeMin, distanceKm, costReais);
+            }
+        }
+    }
+}
