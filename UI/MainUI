@@ -30,7 +30,7 @@ public class MainUI extends JFrame {
     private static final double ROAD_FACTOR = 1.6;
 
     public MainUI() {
-        super("Planejamento de Logística e Transporte - Grafos (Marabá)");
+        super("Planejamento de Logística e Transporte - GraphPanel (Marabá)");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(1100, 700);
         setLocationRelativeTo(null);
@@ -81,12 +81,6 @@ public class MainUI extends JFrame {
         JButton btnBlock = new JButton("Simular Bloqueio (remover aresta)");
         btnBlock.addActionListener(e -> simulateBlock());
         top.add(btnBlock);
-
-        JButton btnDraw = new JButton("Desenhar Grafo");
-        btnDraw.addActionListener(e -> {
-            if (graph != null) drawPanel.setGraph(graph);
-        });
-        top.add(btnDraw);
 
         output = new JTextArea();
         output.setEditable(false);
@@ -308,7 +302,7 @@ public class MainUI extends JFrame {
 
         for (int i = 0; i < comps.size(); i++) {
             List<Integer> c = comps.get(i);
-            sb.append(String.format("  Componente %d (size=%d): %s\n", i, c.size(), c));
+            sb.append(String.format("Componente %d (size=%d): %s\n", i, c.size(), c));
         }
 
         List<Integer> isolated = GraphUtils.isolatedNodes(g);
@@ -331,7 +325,7 @@ public class MainUI extends JFrame {
     public static void showUI() {
         SwingUtilities.invokeLater(() -> {
             // modal welcome panel before opening main UI
-            final JDialog dlg = new JDialog((Frame) null, "Bem-vindo - Rotas de Entregas", true);
+            final JDialog dlg = new JDialog((Frame) null, "Bem-vindo - GraphPanel", true);
             dlg.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
             dlg.setSize(540, 300);
             dlg.setResizable(false);
@@ -351,12 +345,12 @@ public class MainUI extends JFrame {
             info.setWrapStyleWord(true);
             info.setText("Bem-vindo ao sistema de Rotas de Entregas.\n\n" +
                     "Use este painel para carregar seus dados (nodes.csv / edges.csv) e executar " +
-                    "algoritmos (Dijkstra, BFS, DFS, VRP). Clique em \"Abrir interface\" para continuar.");
+                    "algoritmos (Dijkstra, BFS, DFS, VRP). Clique em \"Iniciar\" para continuar.");
             info.setBorder(new EmptyBorder(8,8,8,8));
             content.add(info, BorderLayout.CENTER);
 
             JPanel btns = new JPanel(new FlowLayout(FlowLayout.CENTER));
-            JButton open = new JButton("Abrir interface");
+            JButton open = new JButton("Iniciar");
             open.addActionListener(e -> dlg.dispose());
             btns.add(open);
             content.add(btns, BorderLayout.SOUTH);
